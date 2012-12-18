@@ -1,0 +1,14 @@
+:j -- b1
+html
+head
+tail
+
+:h -- b1
+<html>
+</html>
+<head>
+</head>
+<tail>
+</tail>
+
+
