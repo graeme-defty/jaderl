@@ -64,7 +64,7 @@ compile(File, OutModule, Options) ->
     {ok, SrcBin} = file:read_file(File),
     Src = string:tokens(binary_to_list(SrcBin), "\n"),
     Erl = [preamble(OutModule), gen(parse(Src),2), postscript()],
-    {Mod, Bin} = dynamic_compile:from_string(Erl),
+    {Mod, Bin} = dynamic_compile:from_string(binary_to_list(iolist_to_binary(Erl))),
     code:load_binary(Mod, [], Bin),
     case proplists:get_value(out_dir, Options) of
         undefined -> ok;
