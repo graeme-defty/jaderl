@@ -63,7 +63,7 @@ compile(File, OutModule) ->
 compile(File, OutModule, Options) ->
     {ok, SrcBin} = file:read_file(File),
     Src = string:tokens(binary_to_list(SrcBin), "\n"),
-    Erl = [preamble(atom_to_list(OutModule)), gen(parse(Src),2), postscript()],
+    Erl = [preamble(atom_to_list(OutModule), File), gen(parse(Src),2), postscript()],
     {Mod, Bin} = dynamic_compile:from_string(binary_to_list(iolist_to_binary(Erl))),
     code:load_binary(Mod, [], Bin),
     case proplists:get_value(out_dir, Options) of
@@ -87,13 +87,14 @@ comp_file(Inf, Outf) ->
 %    io:format("~p~n",[Src]),
     Erl = gen(parse(Src),2),
     io:format("~s",[Erl]),
-    file:write_file(Outf_name, [preamble(Inf),Erl,postscript()]).
+    file:write_file(Outf_name, [preamble(Inf, Inf_name),Erl,postscript()]).
 
 
-preamble(Name)  ->
-  [ "-module(",Name,").\n",
-    "-export([render/0, render/1, render/2]).\n",
+preamble(FileName, ModuleName)  ->
+  [ "-module(",ModuleName,").\n",
+    "-export([render/0, render/1, render/2, source/0]).\n",
     "\n",
+    "source(         ) -> \"", FileName, "\".\n",
     "render(         ) -> render([],  []).\n",
     "render(Env      ) -> render(Env, []).\n",
     "\n",
