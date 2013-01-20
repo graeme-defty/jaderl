@@ -90,13 +90,16 @@ comp_file(Inf, Outf) ->
     file:write_file(Outf_name, [preamble(Inf, Inf_name),Erl,postscript()]).
 
 
-preamble(FileName, ModuleName)  ->
+preamble(ModuleName, FileName)  ->
   [ "-module(",ModuleName,").\n",
-    "-export([render/0, render/1, render/2, source/0]).\n",
+    "-export([render/0, render/1, render/2, source/0, dependencies/0]).\n",
+    "-export([translatable_strings/0]).\n",
     "\n",
-    "source(         ) -> \"", FileName, "\".\n",
-    "render(         ) -> render([],  []).\n",
-    "render(Env      ) -> render(Env, []).\n",
+    "source(              ) -> \"", FileName, "\".\n",
+    "dependencies(        ) -> [].\n",
+    "translatable_strings() -> [].\n",
+    "render(              ) -> render([],  []).\n",
+    "render(Env           ) -> render(Env, []).\n",
     "\n",
     "render(Env, Opts) ->\n{ok, "].
 
