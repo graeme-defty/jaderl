@@ -1,5 +1,5 @@
 -module(jaderl).
--export([comp_file/2]).
+-export([comp_file/2, compile/2, compile/3]).
 -compile(export_all).
 -include_lib("eunit/include/eunit.hrl").
 
@@ -56,6 +56,24 @@ testit() ->
 -include("jaderl.hrl").
 
 % --- parse a file and create an erlang module ---
+
+compile(File, OutModule) ->
+    compile(File, OutModule, []).
+
+compile(File, OutModule, Options) ->
+    {ok, SrcBin} = file:read_file(File),
+    Src = string:tokens(binary_to_list(SrcBin), "\n"),
+    Erl = [preamble(OutModule), gen(parse(Src),2), postscript()],
+    {Mod, Bin} = dynamic_compile:from_string(Erl),
+    code:load_binary(Mod, [], Bin),
+    case proplists:get_value(out_dir, Options) of
+        undefined -> ok;
+        OutDir -> 
+            RootName = filename:rootname(File),
+            BeamFile = filename:join(OutDir, RootName ++ ".beam"),
+            file:write_file(BeamFile, Bin),
+            ok
+    end.
 
 comp_file(Inf)  ->  comp_file(Inf, Inf).
 
