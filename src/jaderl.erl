@@ -1,5 +1,5 @@
 -module(jaderl).
--export([comp_file/2]).
+-export([comp_file/2, compile/2, compile/3]).
 -compile(export_all).
 -include_lib("eunit/include/eunit.hrl").
 
@@ -57,6 +57,24 @@ testit() ->
 
 % --- parse a file and create an erlang module ---
 
+compile(File, OutModule) ->
+    compile(File, OutModule, []).
+
+compile(File, OutModule, Options) ->
+    {ok, SrcBin} = file:read_file(File),
+    Src = string:tokens(binary_to_list(SrcBin), "\n"),
+    Erl = [preamble(atom_to_list(OutModule), File), gen(parse(Src),2), postscript()],
+    {Mod, Bin} = dynamic_compile:from_string(binary_to_list(iolist_to_binary(Erl))),
+    code:load_binary(Mod, [], Bin),
+    case proplists:get_value(out_dir, Options) of
+        undefined -> ok;
+        OutDir -> 
+            RootName = filename:rootname(File),
+            BeamFile = filename:join(OutDir, RootName ++ ".beam"),
+            file:write_file(BeamFile, Bin),
+            ok
+    end.
+
 comp_file(Inf)  ->  comp_file(Inf, Inf).
 
 comp_file(Inf, Outf) when is_atom(Inf)  ->  comp_file(atom_to_list(Inf), Outf);
@@ -69,15 +87,19 @@ comp_file(Inf, Outf) ->
 %    io:format("~p~n",[Src]),
     Erl = gen(parse(Src),2),
     io:format("~s",[Erl]),
-    file:write_file(Outf_name, [preamble(Inf),Erl,postscript()]).
+    file:write_file(Outf_name, [preamble(Inf, Inf_name),Erl,postscript()]).
 
 
-preamble(Name)  ->
-  [ "-module(",Name,").\n",
-    "-export([render/0, render/1, render/2]).\n",
+preamble(ModuleName, FileName)  ->
+  [ "-module(",ModuleName,").\n",
+    "-export([render/0, render/1, render/2, source/0, dependencies/0]).\n",
+    "-export([translatable_strings/0]).\n",
     "\n",
-    "render(         ) -> render([],  []).\n",
-    "render(Env      ) -> render(Env, []).\n",
+    "source(              ) -> \"", FileName, "\".\n",
+    "dependencies(        ) -> [].\n",
+    "translatable_strings() -> [].\n",
+    "render(              ) -> render([],  []).\n",
+    "render(Env           ) -> render(Env, []).\n",
     "\n",
     "render(Env, Opts) ->\n{ok, "].
 
