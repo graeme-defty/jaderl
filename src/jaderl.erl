@@ -41,17 +41,30 @@ testit() ->
   io:format("data is ~p~n",[Data]).
 
 
--define(IS_NAME_CHAR(C),  ((C >= $a andalso C =< $z)
-                    orelse (C >= $A andalso C =< $Z) 
-                    orelse (C >= $0 andalso C =< $9)
-                    orelse  C == $_ orelse  C == $- orelse C == $.)).
+%-define(IS_NAME_CHAR(C),  ((C >= $a andalso C =< $z)
+%                    orelse (C >= $A andalso C =< $Z) 
+%                    orelse (C >= $0 andalso C =< $9)
+%                    orelse  C == $_ orelse  C == $- orelse C == $.)).
+
+-define(IS_ALPHA(C),        ((C >= $a andalso C =< $z)
+                      orelse (C >= $A andalso C =< $Z) 
+                      orelse (C >= $0 andalso C =< $9))).
+
+-define(IS_DIGIT(C),         (C >= $0 andalso C =< $9)).
+
+-define(IS_ALPHANUMERIC(C), (?IS_ALPHA(C)
+                      orelse ?IS_DIGIT(C))).
+
+-define(IS_NAME_CHAR(C),     (?IS_ALPHANUMERIC(C)
+                      orelse  C == $_ orelse  C == $-)).
+
+-define(IS_VARNAME_CHAR(C),  (?IS_NAME_CHAR(C)
+                      orelse  C == $.)).
 
 -define(IS_ATTNAME_CHAR(C),   ((C >= $a andalso C =< $z)
                         orelse (C >= $A andalso C =< $Z) 
                         orelse (C >= $0 andalso C =< $9)
                         orelse  C == $_ orelse  C == $- orelse  C == $\:)).
-
--define(IS_DIGIT(C),   (C >= $0 andalso C =< $9)).
 
 -include("jaderl.hrl").
 
@@ -326,8 +339,7 @@ get_attname([H|T], Acc) when ?IS_ATTNAME_CHAR(H)
 get_attname(S, Acc) ->  {lists:reverse(Acc), S}.
 
 get_varname(S)         ->  get_varname(S, []).
-get_varname([H|T], Acc) when ?IS_NAME_CHAR(H)
-                        orelse H == $.
+get_varname([H|T], Acc) when ?IS_VARNAME_CHAR(H)
                     ->  get_varname(T, [H|Acc]);
 get_varname(S, Acc)    ->  {lists:reverse(Acc), S}.
 
@@ -1439,7 +1451,7 @@ data(u2, erl) -> ["[\"\",",
                   "[\"yyy","\"] end),",
                   "\"\"]"];
 
-data(u3, src) -> ["-if v1 > \"small\" && v2 < 99999"," xxx", "-else."," yyy"];
+data(u3, src) -> ["-if v1 > \"small\" && v2 < 99999 ."," xxx", "-else"," | yyy"];
 data(u3, ast) -> [#'if'{lineno=1,
                         reverse=false,
                         expr=#'binop'{lineno=1,
