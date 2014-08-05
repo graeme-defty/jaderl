@@ -118,7 +118,10 @@ open_file(Filename)   ->
 	    	[]		->	{0,[]};
 			[H|T]	->	{Spaces, _} = count_spaces(H),
 						{Spaces, [H|T]}
-		end
+		end;
+    {error, Reason}	->  
+    	io:format("Error ~p reading file ~p~n", [Reason, Filename]),
+    	{0, []}
 	end.
 
 % --- Runtime support functions ---
