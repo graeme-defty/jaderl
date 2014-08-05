@@ -35,17 +35,6 @@
 %%  -   
 %%  -   
 
-testit() ->
-  {ok, Raw} = file:read_file("test.data"),
-  Data  = string:tokens(binary_to_list(Raw),"\n"),
-  io:format("data is ~p~n",[Data]).
-
-
-%-define(IS_NAME_CHAR(C),  ((C >= $a andalso C =< $z)
-%                    orelse (C >= $A andalso C =< $Z) 
-%                    orelse (C >= $0 andalso C =< $9)
-%                    orelse  C == $_ orelse  C == $- orelse C == $.)).
-
 -define(IS_ALPHA(C),        ((C >= $a andalso C =< $z)
                       orelse (C >= $A andalso C =< $Z) 
                       orelse (C >= $0 andalso C =< $9))).
@@ -74,8 +63,7 @@ compile(File, OutModule) ->
     compile(File, OutModule, []).
 
 compile(File, OutModule, Options) ->
-    {ok, SrcBin} = file:read_file(File),
-    Src = string:tokens(binary_to_list(SrcBin), "\n"),
+	{Indent, Src} = open_file(File),
     Erl = [preamble(atom_to_list(OutModule), File), gen(parse(Src),2), postscript()],
     {Mod, Bin} = dynamic_compile:from_string(binary_to_list(iolist_to_binary(Erl))),
     code:load_binary(Mod, [], Bin),
@@ -95,8 +83,7 @@ comp_file(Inf, Outf) when is_atom(Outf) ->  comp_file(Inf, atom_to_list(Outf));
 comp_file(Inf, Outf) ->
     Inf_name = Inf++".jade",
     Outf_name = Outf++".erl",
-    {ok, SrcBin} = file:read_file(Inf_name),
-    Src = string:tokens(binary_to_list(SrcBin), "\n"),
+	{_Indent, Src} = open_file(Inf_name),
 %    io:format("~p~n",[Src]),
     Erl = gen(parse(Src),2),
     io:format("~s",[Erl]),
@@ -119,6 +106,20 @@ preamble(ModuleName, FileName)  ->
 postscript()    ->
   [ "}.\n",
     "%--- END OF MODULE ---%"].
+
+% --- Compile support functions ---
+% Returns:
+%	- the indent of the first line
+%	- an array of strings
+open_file(Filename)   ->
+    case file:read_file(Filename) of
+    {ok, SrcBin}	->
+	    case string:tokens(binary_to_list(SrcBin), "\n") of
+	    	[]		->	{0,[]};
+			[H|T]	->	{Spaces, _} = count_spaces(H),
+						{Spaces, [H|T]}
+		end
+	end.
 
 % --- Runtime support functions ---
 get_var(Var, Env, _Escape)   ->
@@ -198,11 +199,9 @@ p_line([$-,$f,$o,$r |T],Rest,Lineno,Indent)    ->
     AN1 = skip_spaces(After_name1),
     case hd(AN1) of
       $,  ->
-      io:format("Commma~n"),
         Key = Name1,
         {Value, After_name2} = get_name(skip_spaces(tl(AN1)));
       _   ->
-      io:format("No Commma~n"),
         Key = "",
         {Value, After_name2} = {Name1, AN1}
     end,
@@ -230,6 +229,14 @@ p_line([$-,$u,$n,$l,$e,$s,$s |T],Rest,Lineno,Indent) ->
 %    {Fleg, NewRest2, NewLineno2} = get_else(NewRest1, NewLineno1, Indent),
 %    If = #'if'{lineno=Lineno, reverse=true, expr=Expr, tleg=Tleg, fleg=Fleg },
 %    {If, NewRest2, NewLineno2};
+
+% INCLUDE
+p_line([$-,$i,$n,$c,$l,$u,$d,$e |T],Rest,Lineno,Indent)    ->
+        {Name, _After_name} = get_varname(skip_spaces(T)),	% TODO - need a new 'get_filename/1'
+        io:format("Including ~p~n",[Name]),
+        Prefix = lists:duplicate(Indent, $\ ),
+        {_, Lines} = open_file(Name),
+        {nil, [Prefix ++ L || L <- Lines]++Rest, Lineno+1};
 
 % TAG
 p_line([$#|T],Rest,Lineno,Indent) ->
