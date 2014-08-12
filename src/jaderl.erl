@@ -24,13 +24,13 @@
 %%  -   Case
 %%  -   Iteration
 %%  -   Conditionals
-
+%%  -   Includes -	though I really dont like much the way I have handled input to do this
+%%					It really is a bit clunky and I will re-think it at some point
 %%
 %% Things that are not yet implemented:
 %%  -   Code
 %%  -   Template Inheritance
 %%  -   Block Append / prepend
-%%  -   Includes
 %%  -   Mixins
 %%  -   
 %%  -   
@@ -63,8 +63,8 @@ compile(File, OutModule) ->
     compile(File, OutModule, []).
 
 compile(File, OutModule, Options) ->
-	{Indent, Src} = open_file(File),
-    Erl = [preamble(atom_to_list(OutModule), File), gen(parse(Src),2), postscript()],
+	Src = add_file(File, [], 0),
+    Erl = [preamble(atom_to_list(OutModule), File), gen(parse_src(Src),2), postscript()],
     {Mod, Bin} = dynamic_compile:from_string(binary_to_list(iolist_to_binary(Erl))),
     code:load_binary(Mod, [], Bin),
     case proplists:get_value(out_dir, Options) of
@@ -83,10 +83,8 @@ comp_file(Inf, Outf) when is_atom(Outf) ->  comp_file(Inf, atom_to_list(Outf));
 comp_file(Inf, Outf) ->
     Inf_name = Inf++".jade",
     Outf_name = Outf++".erl",
-	{_Indent, Src} = open_file(Inf_name),
-%    io:format("~p~n",[Src]),
-    Erl = gen(parse(Src),2),
-    io:format("~s",[Erl]),
+	Src = add_file(Inf_name, [], 0),
+    Erl = gen(parse_src(Src),2),
     file:write_file(Outf_name, [preamble(Inf, Inf_name),Erl,postscript()]).
 
 
@@ -108,45 +106,109 @@ postscript()    ->
     "%--- END OF MODULE ---%"].
 
 % --- Compile support functions ---
+% The head on the stack is the current line
+% Each entry in the tail of the stack represents 1 level
+% of 'include' nesting and models a file as a list of
+% the lines which it contains.
+
+
+
+% Opens a new file
 % Returns:
 %	- the indent of the first line
-%	- an array of strings
+%	- the lines in the file
 open_file(Filename)   ->
     case file:read_file(Filename) of
     {ok, SrcBin}	->
-	    case string:tokens(binary_to_list(SrcBin), "\n") of
-	    	[]		->	{0,[]};
-			[H|T]	->	{Spaces, _} = count_spaces(H),
-						{Spaces, [H|T]}
-		end;
-    {error, Reason}	->  
-    	io:format("Error ~p reading file ~p~n", [Reason, Filename]),
-    	{0, []}
+	    string:tokens(binary_to_list(SrcBin), "\n");
+    {error, Reason}	->
+    	Msg = io_lib:format("Error ~p reading file ~p~n", [Reason, Filename]),
+    	{error, Msg}
 	end.
+
+
+% Opens a new file and adds it to the source stack
+% If an indent is supplied all the lines of the file are shifted right before pre-pending
+% Returns:
+%	- an updated stack
+add_file(Filename, Stack, Indent)   ->
+   	io:format("Opening file ~p~n", [Filename]),
+    case open_file(Filename) of
+		{error, Msg}	->  
+			io:format(Msg),
+			Stack;
+		Lines	->
+			case Lines of
+				[]		->	Stack;
+				Lines	->
+					NewLines = 
+						case Indent of
+							0	->	Lines;
+							N	->	Prefix = lists:duplicate(Indent, $\ ),
+								    [ Prefix ++ L || L <- Lines]
+						end,
+					[make_src_entry(NewLines, Filename) | Stack]
+			end
+	end.
+
+
+% Creates a new file entry for the source stack
+make_src_entry(Lines, Filename)   ->
+	case Lines of
+		[]		->	{[],{[],Filename,0}};
+		[H|T]	->	{H,{T,Filename,1}}
+	end.
+
+
+% Pulls the first line from the next entry in the 'tail' of the stack
+% If the first entry on the stack is exhausted, it is dropped and the
+% next entry is tried.
+%
+% Each entry on the stack consists of a tuple containing:
+% - first line of this source
+% - tuple of other values:
+%	- list of remaining lines
+%	- Filename
+%	- Line Number
+%
+% Returns
+%	- [First, NewTail] if there are lines left to return
+%	- [] if the stack is exhausted
+pull_first([])		->	[];
+pull_first([{_,{[],Name,LineNo}} | Others])		->	Others;
+pull_first([{_,{[H|T],Name,LineNo}} | Others])	->	[{H,{T,Name,LineNo+1}} | Others].
+
 
 % --- Runtime support functions ---
 get_var(Var, Env, _Escape)   ->
     proplists:get_value(Var, Env).
 
 
-% --- parse group of lines as a block ---
+% --- parse group of lines ---
 
+% Lines is simple array of strings
+% This function is used for unit testing
 parse(Lines)    ->
-    {AST, [], _New_lineno} = p_block(Lines,1,0,[]),
+	Src = [make_src_entry(Lines, "testfile")],
+	parse_src(Src).
+
+% --- parse group of lines as a block ---
+parse_src(Src)    ->
+    {AST, [], _New_lineno} = p_block(Src,1,0,[]),
     AST.
 
 % --- parse block line by line ---
-
+% The source should have the first line 'pulled'
 p_block([], Lineno, _Indent, Acc)   ->  
     {lists:reverse(Acc),[],Lineno};
 
-p_block([First|Rest],Lineno,Indent,Acc) -> 
+p_block(Src=[{First,Dtls}|Stack],Lineno,Indent,Acc) ->
     {Spaces, Content} = count_spaces(First),
     case Spaces < Indent of
         true    ->
-            {lists:reverse(Acc), [First|Rest], Lineno};
+            {lists:reverse(Acc), Src, Lineno};
         false   ->
-            {Item, After_Item, New_Lineno} = p_line(Content,Rest,Lineno,Spaces),
+            {Item, After_Item, New_Lineno} = p_line(Content,Src,Lineno,Spaces),
             NewAcc = case Item of
                       nil ->    Acc;
                       _   ->    [Item|Acc]
@@ -155,24 +217,26 @@ p_block([First|Rest],Lineno,Indent,Acc) ->
     end.
 
 % ---
-p_content_block([First|Rest],Lineno,Indent,Acc) -> 
+%p_content block([], Lineno, _Indent, Acc)   ->  
+%    {lists:reverse(Acc),[],Lineno};
+
+p_content_block(Src=[{First,Dtls}|Stack],Lineno,Indent,Acc) -> 
     {Spaces, Content} = count_spaces(First),
     case Spaces =< Indent of
-        true    ->  {[], [First|Rest], Lineno}; % no indented lines
+        true    ->  {[], Src, Lineno}; % no indented lines
         false   ->  Item = do_string(Content, Lineno),
-                    p_content_block_rest(Rest, Lineno+1, Spaces, [Item | Acc])
+                    p_content_block_rest(pull_first(Src), Lineno+1, Spaces, [Item | Acc])
     end.
 
 p_content_block_rest([],Lineno,_Indent,Acc)  ->   {lists:reverse(Acc), [], Lineno};
-p_content_block_rest([First|Rest],Lineno,Indent,Acc) -> 
+p_content_block_rest(Src=[{First,Dtls}|Stack],Lineno,Indent,Acc) -> 
     {Spaces, _Content} = count_spaces(First),
     case Spaces < Indent of
-        true    ->  
-            {lists:reverse(Acc), [First|Rest], Lineno};
+        true    ->
+            {lists:reverse(Acc), Src, Lineno};
         false   ->
-%            {Item, After_Item, New_Lineno} = p_line(Content,Rest,Lineno,Spaces),
             Item = do_string(lists:nthtail(Indent,First),Lineno),
-            p_content_block_rest(Rest, Lineno+1, Indent, [Item|Acc])
+            p_content_block_rest(pull_first(Src), Lineno+1, Indent, [Item|Acc])
     end.
 
 
@@ -183,15 +247,15 @@ p_content_block_rest([First|Rest],Lineno,Indent,Acc) ->
 % - Lineno is the number of the first line of Rest
 
 % DOCTYPE
-p_line([$!,$!,$!,$ |T],Rest,Lineno,_Indent) ->  {{doctype,Lineno,T}, Rest, Lineno+1};
-p_line([$!,$!,$!|T],Rest,Lineno,_Indent)    ->  {{doctype,Lineno,T}, Rest, Lineno+1};
-p_line([$d,$o,$c,$t,$y,$p,$e,$ |T],Rest,Lineno,_Indent)   ->  {{doctype,Lineno,T}, Rest, Lineno+1};
-p_line([$d,$o,$c,$t,$y,$p,$e|T],Rest,Lineno,_Indent)   ->  {{doctype,Lineno,T}, Rest, Lineno+1};
+p_line([$!,$!,$!,$ |T],Rest,Lineno,_Indent) ->  {{doctype,Lineno,T}, pull_first(Rest), Lineno+1};
+p_line([$!,$!,$!|T],Rest,Lineno,_Indent)    ->  {{doctype,Lineno,T}, pull_first(Rest), Lineno+1};
+p_line([$d,$o,$c,$t,$y,$p,$e,$ |T],Rest,Lineno,_Indent)   ->  {{doctype,Lineno,T}, pull_first(Rest), Lineno+1};
+p_line([$d,$o,$c,$t,$y,$p,$e|T],Rest,Lineno,_Indent)   ->  {{doctype,Lineno,T}, pull_first(Rest), Lineno+1};
 
 % CASE
 p_line([$-,$c,$a,$s,$e |T],Rest,Lineno,Indent) ->
         {Name, _After_name} = get_name(skip_spaces(T)),
-        {Default, Whens, NewRest, NewLineno} = get_whens(Rest,Lineno+1,Indent,[]),
+        {Default, Whens, NewRest, NewLineno} = get_whens(pull_first(Rest),Lineno+1,Indent,[]),
         {{'case',Lineno,Name,Default,Whens}, NewRest, NewLineno};
 
 % FOR / EACH
@@ -227,19 +291,12 @@ p_line([$-,$u,$n,$l,$e,$s,$s |T],Rest,Lineno,Indent) ->
     {Fleg, NewRest2, NewLineno3}  = get_else(NewRest1, NewLineno2, Indent),
     If = #'if'{lineno=Lineno, reverse=true, expr=Expr, tleg=Tleg, fleg=Fleg },
     {If, NewRest2, NewLineno3};
-%    {Expr, AfterExpr} = get_expression(skip_spaces(T), Lineno),
-%    {Tleg, NewRest1, NewLineno1} = get_when_content(AfterExpr, Rest, Lineno, Indent),
-%    {Fleg, NewRest2, NewLineno2} = get_else(NewRest1, NewLineno1, Indent),
-%    If = #'if'{lineno=Lineno, reverse=true, expr=Expr, tleg=Tleg, fleg=Fleg },
-%    {If, NewRest2, NewLineno2};
 
 % INCLUDE
 p_line([$-,$i,$n,$c,$l,$u,$d,$e |T],Rest,Lineno,Indent)    ->
-        {Name, _After_name} = get_varname(skip_spaces(T)),	% TODO - need a new 'get_filename/1'
-        io:format("Including ~p~n",[Name]),
-        Prefix = lists:duplicate(Indent, $\ ),
-        {_, Lines} = open_file(Name),
-        {nil, [Prefix ++ L || L <- Lines]++Rest, Lineno+1};
+        {Name, _After_name} = get_filename(skip_spaces(T)),
+        Src = add_file(Name, pull_first(Rest), Indent),
+        {nil, Src, Lineno+1};
 
 % TAG
 p_line([$#|T],Rest,Lineno,Indent) ->
@@ -253,42 +310,45 @@ p_line([H|T],Rest,Lineno,Indent) when ?IS_NAME_CHAR(H) ->
     p_tag_body(Tagname, After_tag, Rest, Lineno, Indent);
 
 % CONTENT
-p_line([$|,$ |T],Rest,Lineno,_Indent)   ->  {do_string(T, Lineno), Rest, Lineno+1};
-p_line([$||T],Rest,Lineno,_Indent)      ->  {do_string(T, Lineno), Rest, Lineno+1};
+p_line([$|,$ |T],Rest,Lineno,_Indent)   ->  
+{do_string(T, Lineno), pull_first(Rest), Lineno+1};
+p_line([$||T],Rest,Lineno,_Indent)      ->  {do_string(T, Lineno), pull_first(Rest), Lineno+1};
 
 % COMMENT
 p_line([$/,$/,$i,$f,$ |T],Rest,Lineno,Indent)    ->
-        {Content, NewRest, New_lineno} = p_block(Rest,Lineno+1,Indent+1,[]),
+        {Content, NewRest, New_lineno} = p_block(pull_first(Rest),Lineno+1,Indent+1,[]),
         {{comblock,Lineno,T,Content}, NewRest, New_lineno};
 p_line([$/,$/,$-|T],Rest,Lineno,Indent)    ->  
     case string:strip(T) of
-        []  ->  {_Content, NewRest, New_lineno} = p_block(Rest,Lineno+1,Indent+1,[]),
+        []  ->  {_Content, NewRest, New_lineno} = p_block(pull_first(Rest),Lineno+1,Indent+1,[]),
                 {nil, NewRest, New_lineno};
-        _   ->  {nil, Rest, Lineno+1}
+        _   ->  {nil, pull_first(Rest), Lineno+1}
     end;
 p_line([$/,$/,$ |T],Rest,Lineno,Indent)    ->
     case string:strip(T) of
-        []  ->  {Content, NewRest, New_lineno} = p_block(Rest,Lineno+1,Indent+1,[]),
+        []  ->  {Content, NewRest, New_lineno} = p_block(pull_first(Rest),Lineno+1,Indent+1,[]),
                 {{comblock,Lineno,[],Content}, NewRest, New_lineno};
-        _   ->  {{comment,Lineno,T}, Rest, Lineno+1}
+        _   ->  {{comment,Lineno,T}, pull_first(Rest), Lineno+1}
     end;
 p_line([$/,$/|T],Rest,Lineno,Indent)       ->
     case string:strip(T) of
-        []  ->  {Content, NewRest, New_lineno} = p_block(Rest,Lineno+1,Indent+1,[]),
+        []  ->  {Content, NewRest, New_lineno} = p_block(pull_first(Rest),Lineno+1,Indent+1,[]),
                 {{comblock,Lineno,[],Content}, NewRest, New_lineno};
-        _   ->  {{comment,Lineno,T}, Rest, Lineno+1}
+        _   ->  {{comment,Lineno,T}, pull_first(Rest), Lineno+1}
     end;
 
 % FILTER
 p_line([$: |T],Rest,Lineno,Indent)    ->
         {Name, _After_name} = get_name(T),
-        {Content, NewRest, New_lineno} = p_content_block(Rest,Lineno+1,Indent,[]),
+        {Content, NewRest, New_lineno} = p_content_block(pull_first(Rest),Lineno+1,Indent,[]),
         {{filter,Lineno,Name,[],Content}, NewRest, New_lineno};
 
 % UNKNOWN
-p_line(First,Rest,Lineno,_Indent) ->
-    io:format("Error: ~p, ~p, ~p~n",[First,Rest,Lineno]),
-    {{err,Lineno,lists:flatten(io_lib:format("Dont know how to parse a ~s",[[First]]))}, Rest, Lineno+1}.
+p_line(This,Src,Lineno,_Indent) ->
+    io:format("Error: '~p', ~p, ~p~n",[This,Src,Lineno]),
+    {{err,Lineno,lists:flatten(io_lib:format("Dont know how to parse line ~s",[This]))}, Src, Lineno+1}.
+
+% -------------  End of p_line ---------------
 
 p_tag_body(Tagname, After_tag, Rest, Lineno, Indent)  ->
     {ID, After_id} = get_id(After_tag),
@@ -314,13 +374,13 @@ p_tag_body(Tagname, After_tag, Rest, Lineno, Indent)  ->
               case string:strip([$.|After_atts]) == ".." orelse
                   Tagname == script orelse
                   Tagname == style of
-                true  ->  p_content_block(NewRest,Lineno+1,Indent,[]);
+                true  ->  p_content_block(pull_first(NewRest),Lineno+1,Indent,[]);
                 false ->
                   case After_atts of
-                      []    ->  p_block(NewRest,Lineno+1,Indent+1,[]);
-                      [$ ]  ->  p_block(NewRest,Lineno+1,Indent+1,do_string(" ",Lineno));
-                      [$ |T]->  p_block(NewRest,Lineno+1,Indent+1,[do_string(T, Lineno)]);
-                      S     ->  p_block(NewRest,Lineno+1,Indent+1,[do_string(S, Lineno)])
+                      []    ->  p_block(pull_first(NewRest),Lineno+1,Indent+1,[]);
+                      [$ ]  ->  p_block(pull_first(NewRest),Lineno+1,Indent+1,do_string(" ",Lineno));
+                      [$ |T]->  p_block(pull_first(NewRest),Lineno+1,Indent+1,[do_string(T, Lineno)]);
+                      S     ->  p_block(pull_first(NewRest),Lineno+1,Indent+1,[do_string(S, Lineno)])
                   end
               end            
     end,
@@ -358,6 +418,14 @@ skip_spaces(S)      ->  S.
 
 get_id([$#|T])  ->  get_name(T);
 get_id(T)       ->  {[], T}.
+
+get_filename(S)    ->
+    case S of
+        []      ->  "";
+        [$'|T]  ->  get_quoted(T,"\'");
+        [$"|T]  ->  get_quoted(T,"\"");
+        _       ->  get_quoted(S," ")
+    end.
 
 get_quoted(S,Q)     ->  get_quoted(S,Q,[]).
 get_quoted(S,Q,Acc) ->
@@ -398,10 +466,12 @@ parse_atts(S,Acc,Rest)  ->
     case S of
         [$)|T]  -> {lists:reverse(Acc), skip_spaces(T), Rest};
         [$,|T]  -> parse_atts(skip_spaces(T), Acc, Rest);
-        []      -> 
-            case Rest of
-                []  ->              {lists:reverse(Acc), [], []};
-                [First|NewRest] ->  parse_atts(skip_spaces(First), Acc, NewRest)
+        []      ->
+        	NewRest = pull_first(Rest),
+            case NewRest of
+                []	->  {lists:reverse(Acc), [], []};
+                _	->	{First,_} = hd(NewRest),
+                		parse_atts(skip_spaces(First), Acc, NewRest)
             end;
         [C|_] when ?IS_ATTNAME_CHAR(C) ->  
             {Att, After_att} = parse_att(S, Rest),
@@ -410,7 +480,7 @@ parse_atts(S,Acc,Rest)  ->
             parse_atts(T, Acc, Rest)
     end.
 
-%Parse a single att 
+% Parse a single att 
 % On entry: S points to the first char of the name
 % Returns:  {Att, After_att} - where att is a proplist entry
 parse_att(S, _Rest) ->
@@ -464,16 +534,16 @@ do_string_var(S, L, Sacc, Acc, Escape)  ->
 % Returns - {Default, Whens, NewRest, New_lineno}
 %             where - each When in the list of Whens is a when record
 %             and   - Default is the ocntent for the default case
-get_whens([First|Rest],Lineno,Indent,Acc) ->
+get_whens(Src=[{First,Dtls}|Stack],Lineno,Indent,Acc) ->
     {Spaces, Content} = count_spaces(First),
     case Spaces =< Indent of
         true    ->
-            {[],lists:reverse(Acc), [First|Rest], Lineno};
+            {[],lists:reverse(Acc), Src, Lineno};
         false   ->
             case Content of
 
               [$-,$w,$h,$e,$n |T] ->
-                {When, NewRest, NewLineno} = get_a_when(T,Rest,Lineno,Spaces),
+                {When, NewRest, NewLineno} = get_a_when(T,Src,Lineno,Spaces),
                 NewAcc = case When of
                           nil ->    Acc;
                           _   ->    [When|Acc]
@@ -481,10 +551,10 @@ get_whens([First|Rest],Lineno,Indent,Acc) ->
                 get_whens(NewRest, NewLineno, Indent, NewAcc);
 
               [$-,$d,$e,$f,$a,$u,$l,$t |T]  ->
-                {Default, NewRest, NewLineno} = get_default(T,Rest,Lineno,Spaces),
-                {Default,lists:reverse(Acc), NewRest, NewLineno};
+                {Default, NewRest, NewLineno} = get_default(T,Src,Lineno,Spaces),
+                {Default,lists:reverse(Acc), NewRest, NewLineno}
 
-              _ -> {[],lists:reverse(Acc), [First|Rest], Lineno}
+%              _ -> {[],lists:reverse(Acc), [First|Rest], Lineno}  %%% - [First|Rest] no longer works
 
             end
     end.
@@ -516,13 +586,13 @@ get_when_content(T,Rest,Lineno,Indent)  ->
         {[C],R,L};
     _         ->
         case string:strip([$.|T]) == ".." of
-          true  ->  p_content_block(Rest,Lineno+1,Indent,[]);
+          true  ->  p_content_block(pull_first(Rest),Lineno+1,Indent,[]);
           false ->
             case T of
-                []        ->  p_block(Rest,Lineno+1,Indent+1,[]);
-                [$ ]      ->  p_block(Rest,Lineno+1,Indent+1,do_string(" ",Lineno));
-                [$ |NewT] ->  p_block(Rest,Lineno+1,Indent+1,[do_string(NewT, Lineno)]);
-                S         ->  p_block(Rest,Lineno+1,Indent+1,[do_string(S, Lineno)])
+                []        ->  p_block(pull_first(Rest),Lineno+1,Indent+1,[]);
+                [$ ]      ->  p_block(pull_first(Rest),Lineno+1,Indent+1,do_string(" ",Lineno));
+                [$ |NewT] ->  p_block(pull_first(Rest),Lineno+1,Indent+1,[do_string(NewT, Lineno)]);
+                S         ->  p_block(pull_first(Rest),Lineno+1,Indent+1,[do_string(S, Lineno)])
             end
         end            
   end.
@@ -661,21 +731,31 @@ get_dec_part(S,     Acc,_Div, Sgn)               ->  {Acc*Sgn, S}.
 
 % Parses the 'else' clauses of an 'if' or 'unless' construct
 % Returns - {ElseBody, NewRest, New_lineno}
-get_else([First|Rest],Lineno,Indent) ->
+get_else(Src=[{First,Dtls}|Stack],Lineno,Indent) ->
     {Spaces, Content} = count_spaces(First),
     case Spaces < Indent of
         true    ->
-            {[], [First|Rest], Lineno};
+            {[], Src, Lineno};
         false   ->
             case Content of
-              [$-,$e,$l,$s,$e|T]  ->  get_when_content(T,Rest,Lineno,Spaces);
-              _                   ->  {[], [First|Rest], Lineno, Spaces} 
+              [$-,$e,$l,$s,$e|T]  ->  get_when_content(T,Src,Lineno,Spaces);
+              _                   ->  {[], Src, Lineno, Spaces} 
             end
     end.
 
 
 
 % === unit tests ===
+pull_first_test_() ->
+  [
+    ?_assertEqual([{"abc",{["def","ghi"],test,1}}], pull_first([{"X",{["abc","def","ghi"],test,0}}])),
+    ?_assertEqual([{"def",{["ghi"],test2,22}}], pull_first([{"abc",{[],test,12}},{"def",{["ghi"],test2,22}}])),
+    ?_assertEqual([{"def",{["ghi"],test2,33}}], pull_first([{"abc",{[],test,11}},{"def",{["ghi"],test2,33}}])),
+%    ?_assertEqual([{"ghi",[[]]}], pull_first([[],["ghi"]])),
+%    ?_assertEqual([], pull_first([[],[]])),
+    ?_assert(true)
+  ].
+
 skip_spaces_test_() ->
   [
     ?_assertEqual("abc", skip_spaces("abc")) ,
@@ -685,13 +765,20 @@ skip_spaces_test_() ->
     ?_assert(true)
   ].
 
-
-
 count_spaces_test_() ->
   [
     ?_assertEqual({0,"abc"}, count_spaces("abc")) ,
     ?_assertEqual({3,"abc"}, count_spaces("   abc")) ,
     ?_assertEqual({5,""},    count_spaces("     ")) ,
+    ?_assert(true)
+  ].
+
+get_quoted_test_() ->
+  [
+    ?_assertEqual({"abc","'def"}, get_quoted("abc''def","'")) ,
+    ?_assertEqual({"abc",""}, get_quoted("abc","'")) ,
+    ?_assertEqual({"abc''","ef"}, get_quoted("abc''def","de")) ,
+    ?_assertEqual({"abc''d","f"}, get_quoted("abc''def","xe")) ,
     ?_assert(true)
   ].
 
