@@ -70,8 +70,7 @@ compile(File, OutModule, Options) ->
     case proplists:get_value(out_dir, Options) of
         undefined -> ok;
         OutDir -> 
-            RootName = filename:rootname(File),
-            BeamFile = filename:join(OutDir, RootName ++ ".beam"),
+            BeamFile = filename:join(OutDir, atom_to_list(OutModule) ++ ".beam"),
             file:write_file(BeamFile, Bin),
             ok
     end.
